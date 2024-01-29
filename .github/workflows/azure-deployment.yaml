@@ -1,0 +1,91 @@
+name: Azure Deployment (main)
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    env:
+      IMAGE_NAME: "eastplayers/vanlang-be"
+      IMAGE_TAG: "production-0.1.${{github.run_number}}"
+      IMAGE_TAG_LATEST: "latest"
+      AZURE_ENV: ${{ secrets.AZURE_ENV }}
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+      CLUSTER_NAME: ${{ secrets.CLUSTER_NAME }}
+      RESOURCE_GROUP_NAME: ${{ secrets.RESOURCE_GROUP_NAME }}
+      NAMESPACE: "vanlang"
+      DEPLOYMENT: "vanlang-be-production"
+    # Add "id-token" with the intended permissions.
+    permissions:
+      contents: "read"
+      id-token: "write"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          clean: false
+
+      - name: Inject env
+        run: echo "$AZURE_ENV" > .env
+        shell: bash
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v1
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      - name: Setup Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v1
+
+      - name: Build and Push Docker Image
+        id: docker_build
+        uses: docker/build-push-action@v2
+        with:
+          context: ./
+          file: ./Dockerfile-prod
+          builder: ${{ steps.buildx.outputs.name }}
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG_LATEST }}
+
+      - name: Image digest
+        run: echo ${{ steps.docker_build.outputs.digest }}
+      - name: Install Azure cli
+        run: |
+          sudo apt-get install ca-certificates curl apt-transport-https lsb-release gnupg
+          curl -sL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/microsoft.gpg > /dev/null
+          AZ_REPO=$(lsb_release -cs)
+          echo "deb [arch=amd64] https://packages.microsoft.com/repos/azure-cli/ $AZ_REPO main" | sudo tee /etc/apt/sources.list.d/azure-cli.list
+          sudo apt-get update
+          sudo apt-get install azure-cli
+
+      - name: Azure login
+        id: login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set AKS context
+        id: set-context
+        uses: azure/aks-set-context@v3
+        with:
+          resource-group: "${{ env.RESOURCE_GROUP_NAME }}"
+          cluster-name: "${{ env.CLUSTER_NAME }}"
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: "v3.10.2"
+
+      - name: Inject env for upgrading helm chart
+        run: echo "$AZURE_ENV" > ${{ github.workspace }}/deployment/env
+        shell: bash
+
+      - name: Update Helm Chart
+        run: helm upgrade -n ${{ env.NAMESPACE }} ${{ env.DEPLOYMENT }} ${{ github.workspace }}/deployment --set image.tag=${{ env.IMAGE_TAG }}

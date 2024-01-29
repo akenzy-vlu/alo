@@ -1,0 +1,31 @@
+name: Deploy VanLang Strapi (stagingEP)
+
+on:
+  push:
+    branches: [staging-ep]
+
+jobs:
+  build:
+    env:
+      VANLANG_ENV_STAG: ${{ secrets.VANLANG_ENV_STAG }}
+    runs-on: [self-hosted, stagingEP]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Inject env
+        run: echo "$VANLANG_ENV_STAG" > .env
+        shell: bash
+
+      - name: remove none tag images
+        continue-on-error: true
+        run: docker rmi $(docker images --filter "dangling=true" -q --no-trunc)
+
+      - name: Run build
+        run: docker compose build
+
+      - name: Run up
+        run: docker compose up -d
